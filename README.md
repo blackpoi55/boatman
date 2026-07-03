@@ -26,6 +26,21 @@
 - **Export**: Collection → Postman v2.1 (.json)
 - **Global variables** (นอกเหนือจาก environment)
 
+**บัญชีผู้ใช้ & การแชร์กับทีม**
+- **ล็อกอิน**: username + password (bcrypt hash, session = JWT ใน httpOnly cookie)
+- **Workspaces**: `Personal` (เห็นคนเดียว) + `Team` (สมาชิกเห็นร่วม) สลับได้จากหัวมุมซ้ายบน
+- **Visibility รายชิ้น**: collection/environment สลับ `Private ↔ Shared` ได้ (คลิกขวา) — ใน Team workspace ยังตั้ง private เฉพาะตัวเองได้
+- **ย้ายข้าม workspace**: คลิกขวา → Move to… (เช่น ย้ายจาก Personal ขึ้น Team เพื่อแชร์)
+- **History / Cookies / Globals = ส่วนตัวเสมอ** (ผูกกับบัญชีผู้ใช้)
+- ผู้ใช้คนแรกที่สมัคร จะ "รับช่วง" collection/environment เดิมเข้ามาไว้ใน Team workspace อัตโนมัติ (visibility = shared)
+
+**หลายทีม & เชิญสมาชิก**
+- สร้างได้**หลาย Team workspace** แยกสิทธิ์กัน — เห็นเฉพาะทีมที่ตัวเองเป็นสมาชิก (membership-based)
+- **เชิญสมาชิก** (เจ้าของทีมเท่านั้น): เชิญด้วย username/email ของคนที่สมัครแล้ว → เข้าทีมทันที
+- **Pre-invite ด้วย email**: เชิญคนที่ยังไม่สมัครได้ → เก็บเป็น pending แล้ว auto-join เมื่อเขาสมัคร
+- จัดการผ่านหน้า **Manage members** (คลิกไอคอนสมาชิกในตัวเลือก workspace): ดู/ลบสมาชิก, ยกเลิกคำเชิญ, ออกจากทีม
+- สิทธิ์: **owner** = เชิญ/ลบสมาชิก/เปลี่ยนชื่อ/ลบทีม · **member** = ใช้งาน + ออกจากทีมเองได้
+
 ## เริ่มใช้งาน
 
 ```bash
@@ -40,8 +55,9 @@ npm run dev          # เปิด http://localhost:3000
 
 | ส่วน | ที่อยู่ |
 |------|--------|
+| Auth (JWT/bcrypt) + workspace access rules | `src/lib/auth.ts`, `src/lib/workspace.ts`, `src/app/api/auth/**` |
 | Server proxy + cookie jar + manual redirect | `src/app/api/proxy/route.ts`, `src/lib/cookieJar.ts` |
-| REST API (collections/requests/environments/history/cookies/globals) | `src/app/api/**/route.ts` |
+| REST API (workspaces/collections/requests/environments/history/cookies/globals) | `src/app/api/**/route.ts` |
 | Prisma schema | `prisma/schema.prisma` |
 | State (Zustand) | `src/store/useStore.ts` |
 | pm.* script sandbox | `src/lib/scripts.ts` |

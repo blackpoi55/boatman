@@ -11,6 +11,9 @@ import {
   ProxyResponse,
   RequestData,
   TestResult,
+  User,
+  Workspace,
+  Visibility,
   newRequest,
   uid,
 } from "@/lib/types";
@@ -26,13 +29,28 @@ import { paramsToUrl, urlToParams, mergeParams } from "@/lib/url";
 
 type SidebarView = "collections" | "history" | "environments";
 
+const ACTIVE_ENV_KEY = "boatman_active_env";
+const CURRENT_WS_KEY = "boatman_current_ws";
+
 interface State {
+  // auth
+  user: User | null;
+  authReady: boolean;
+  authError: string | null;
+
+  // workspaces
+  workspaces: Workspace[];
+  currentWorkspaceId: string | null;
+
+  // data (for current workspace / user)
   collections: CollectionData[];
   environments: EnvironmentData[];
   globals: GlobalVarData[];
   cookies: CookieData[];
   history: HistoryEntry[];
+  activeEnvId: string | null;
 
+  // ui
   tabs: RequestData[];
   activeTabId: string | null;
   responses: Record<string, ProxyResponse | null>;
@@ -45,9 +63,34 @@ interface State {
 
   activeEnv: () => EnvironmentData | null;
   activeTab: () => RequestData | null;
+  currentWorkspace: () => Workspace | null;
 
-  loadAll: () => Promise<void>;
+  // lifecycle / auth
+  checkAuth: () => Promise<void>;
+  login: (identifier: string, password: string) => Promise<boolean>;
+  register: (data: {
+    username: string;
+    email: string;
+    password: string;
+    name: string;
+  }) => Promise<boolean>;
+  logout: () => Promise<void>;
 
+  // workspaces
+  loadWorkspaces: () => Promise<void>;
+  setCurrentWorkspace: (id: string) => Promise<void>;
+  createWorkspace: (name: string) => Promise<void>;
+  renameWorkspace: (id: string, name: string) => Promise<void>;
+  deleteWorkspace: (id: string) => Promise<void>;
+  loadMembers: (id: string) => Promise<import("@/lib/types").MembersData | null>;
+  inviteMember: (id: string, identifier: string) => Promise<{ ok: boolean; message: string }>;
+  removeMember: (id: string, userId: string) => Promise<void>;
+  cancelInvite: (id: string, email: string) => Promise<void>;
+  leaveWorkspace: (id: string) => Promise<void>;
+
+  loadWorkspaceData: () => Promise<void>;
+
+  // tabs
   addTab: (req?: RequestData) => void;
   closeTab: (id: string) => void;
   closeOtherTabs: (id: string) => void;
@@ -63,22 +106,29 @@ interface State {
   setSidebarView: (v: SidebarView) => void;
   toggleCookieJar: () => void;
 
-  createCollection: (name?: string) => Promise<string | undefined>;
+  // collections
+  createCollection: (name?: string, visibility?: Visibility) => Promise<string | undefined>;
   renameCollection: (id: string, name: string) => Promise<void>;
   deleteCollection: (id: string) => Promise<void>;
+  duplicateCollection: (id: string) => Promise<void>;
+  setCollectionVisibility: (id: string, v: Visibility) => Promise<void>;
+  moveCollection: (id: string, workspaceId: string) => Promise<void>;
 
+  // requests
   saveActiveRequest: (collectionId?: string) => Promise<void>;
   openSavedRequest: (req: RequestData) => void;
   deleteSavedRequest: (id: string) => Promise<void>;
   renameSavedRequest: (id: string, name: string) => Promise<void>;
   duplicateSavedRequest: (req: RequestData) => Promise<void>;
-  duplicateCollection: (id: string) => Promise<void>;
 
-  createEnvironment: (name?: string) => Promise<void>;
+  // environments
+  createEnvironment: (name?: string, visibility?: Visibility) => Promise<void>;
   updateEnvironment: (env: EnvironmentData) => Promise<void>;
   deleteEnvironment: (id: string) => Promise<void>;
-  activateEnvironment: (id: string | null) => Promise<void>;
+  activateEnvironment: (id: string | null) => void;
   duplicateEnvironment: (env: EnvironmentData) => Promise<void>;
+  setEnvironmentVisibility: (id: string, v: Visibility) => Promise<void>;
+  moveEnvironment: (id: string, workspaceId: string) => Promise<void>;
 
   saveGlobals: (vars: GlobalVarData[]) => Promise<void>;
 
@@ -116,6 +166,32 @@ function normalizeRequest(r: any): RequestData {
   };
 }
 
+function normalizeCollection(c: any): CollectionData {
+  return {
+    id: c.id,
+    name: c.name,
+    order: c.order,
+    workspaceId: c.workspaceId,
+    ownerId: c.ownerId,
+    visibility: c.visibility === "private" ? "private" : "shared",
+    isMine: !!c.isMine,
+    requests: (c.requests || []).map(normalizeRequest),
+  };
+}
+
+function normalizeEnv(e: any): EnvironmentData {
+  return {
+    id: e.id,
+    name: e.name,
+    isActive: false,
+    variables: Array.isArray(e.variables) ? e.variables : [],
+    workspaceId: e.workspaceId,
+    ownerId: e.ownerId,
+    visibility: e.visibility === "private" ? "private" : "shared",
+    isMine: !!e.isMine,
+  };
+}
+
 function withIds(vars: { key: string; value: string; enabled: boolean }[]): EnvVariable[] {
   return vars.map((v) => ({ id: uid(), key: v.key, value: v.value, enabled: v.enabled }));
 }
@@ -123,20 +199,30 @@ function withIds(vars: { key: string; value: string; enabled: boolean }[]): EnvV
 function withGlobalIds(
   vars: { key: string; value: string; enabled: boolean }[]
 ): GlobalVarData[] {
-  return vars.map((v) => ({
-    id: uid(),
-    key: v.key,
-    value: v.value,
-    enabled: v.enabled,
-  }));
+  return vars.map((v) => ({ id: uid(), key: v.key, value: v.value, enabled: v.enabled }));
 }
 
+const ls = {
+  get: (k: string) => (typeof window !== "undefined" ? localStorage.getItem(k) : null),
+  set: (k: string, v: string) => {
+    if (typeof window !== "undefined") localStorage.setItem(k, v);
+  },
+};
+
 export const useStore = create<State>((set, get) => ({
+  user: null,
+  authReady: false,
+  authError: null,
+
+  workspaces: [],
+  currentWorkspaceId: null,
+
   collections: [],
   environments: [],
   globals: [],
   cookies: [],
   history: [],
+  activeEnvId: null,
 
   tabs: [],
   activeTabId: null,
@@ -148,65 +234,198 @@ export const useStore = create<State>((set, get) => ({
   ready: false,
   useCookieJar: true,
 
-  activeEnv: () => get().environments.find((e) => e.isActive) ?? null,
+  activeEnv: () => {
+    const { environments, activeEnvId } = get();
+    return environments.find((e) => e.id === activeEnvId) ?? null;
+  },
   activeTab: () => {
     const { tabs, activeTabId } = get();
     return tabs.find((t) => t.id === activeTabId) ?? null;
   },
+  currentWorkspace: () => {
+    const { workspaces, currentWorkspaceId } = get();
+    return workspaces.find((w) => w.id === currentWorkspaceId) ?? null;
+  },
 
-  loadAll: async () => {
+  // ---- auth ----
+  checkAuth: async () => {
     try {
-      const [colRes, envRes, histRes, globRes, cookieRes] = await Promise.all([
-        fetch("/api/collections").then((r) => r.json()),
-        fetch("/api/environments").then((r) => r.json()),
-        fetch("/api/history?limit=100").then((r) => r.json()),
-        fetch("/api/globals").then((r) => r.json()),
-        fetch("/api/cookies").then((r) => r.json()),
-      ]);
-      const collections: CollectionData[] = (Array.isArray(colRes) ? colRes : []).map(
-        (c: any) => ({
-          id: c.id,
-          name: c.name,
-          order: c.order,
-          requests: (c.requests || []).map(normalizeRequest),
-        })
-      );
-      const environments: EnvironmentData[] = (Array.isArray(envRes) ? envRes : []).map(
-        (e: any) => ({
-          id: e.id,
-          name: e.name,
-          isActive: e.isActive,
-          variables: Array.isArray(e.variables) ? e.variables : [],
-        })
-      );
-      const history: HistoryEntry[] = (Array.isArray(histRes) ? histRes : []).map(
-        (h: any) => ({
-          id: h.id,
-          method: h.method,
-          url: h.url,
-          status: h.status,
-          statusText: h.statusText,
-          durationMs: h.durationMs,
-          sizeBytes: h.sizeBytes,
-          request: normalizeRequest(h.request || {}),
-          response: h.response || null,
-          createdAt: h.createdAt,
-        })
-      );
-      const globals: GlobalVarData[] = (Array.isArray(globRes) ? globRes : []).map(
-        (g: any) => ({ id: g.id, key: g.key, value: g.value, enabled: g.enabled })
-      );
-      const cookies: CookieData[] = Array.isArray(cookieRes) ? cookieRes : [];
-
-      set({ collections, environments, history, globals, cookies, ready: true });
-      if (get().tabs.length === 0) get().addTab();
-    } catch (err) {
-      console.error("loadAll failed", err);
-      set({ ready: true });
-      if (get().tabs.length === 0) get().addTab();
+      const { user } = await fetch("/api/auth/me").then((r) => r.json());
+      set({ user: user ?? null, authReady: true });
+      if (user) await bootstrap(set, get);
+    } catch {
+      set({ authReady: true });
     }
   },
 
+  login: async (identifier, password) => {
+    set({ authError: null });
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: identifier, password }),
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      set({ authError: e.error || "Login failed" });
+      return false;
+    }
+    const user = await res.json();
+    set({ user });
+    await bootstrap(set, get);
+    return true;
+  },
+
+  register: async (data) => {
+    set({ authError: null });
+    const res = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      set({ authError: e.error || "Registration failed" });
+      return false;
+    }
+    const user = await res.json();
+    set({ user });
+    await bootstrap(set, get);
+    return true;
+  },
+
+  logout: async () => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    set({
+      user: null,
+      workspaces: [],
+      currentWorkspaceId: null,
+      collections: [],
+      environments: [],
+      globals: [],
+      cookies: [],
+      history: [],
+      tabs: [],
+      activeTabId: null,
+      responses: {},
+      testResults: {},
+      scriptLogs: {},
+      ready: false,
+    });
+  },
+
+  // ---- workspaces ----
+  loadWorkspaces: async () => {
+    const list = await fetch("/api/workspaces").then((r) => r.json());
+    const workspaces: Workspace[] = Array.isArray(list) ? list : [];
+    let currentWorkspaceId = get().currentWorkspaceId || ls.get(CURRENT_WS_KEY);
+    if (!currentWorkspaceId || !workspaces.some((w) => w.id === currentWorkspaceId)) {
+      const team = workspaces.find((w) => w.type === "team");
+      currentWorkspaceId = team?.id || workspaces[0]?.id || null;
+    }
+    set({ workspaces, currentWorkspaceId });
+    if (currentWorkspaceId) ls.set(CURRENT_WS_KEY, currentWorkspaceId);
+  },
+
+  setCurrentWorkspace: async (id) => {
+    set({ currentWorkspaceId: id });
+    ls.set(CURRENT_WS_KEY, id);
+    await get().loadWorkspaceData();
+  },
+
+  createWorkspace: async (name) => {
+    const res = await fetch("/api/workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const ws = await res.json();
+    if (ws && ws.id) {
+      set((s) => ({ workspaces: [...s.workspaces, ws] }));
+      await get().setCurrentWorkspace(ws.id);
+    }
+  },
+
+  renameWorkspace: async (id, name) => {
+    set((s) => ({
+      workspaces: s.workspaces.map((w) => (w.id === id ? { ...w, name } : w)),
+    }));
+    await fetch(`/api/workspaces/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  deleteWorkspace: async (id) => {
+    await fetch(`/api/workspaces/${id}`, { method: "DELETE" });
+    set((s) => ({ workspaces: s.workspaces.filter((w) => w.id !== id) }));
+    if (get().currentWorkspaceId === id) {
+      const next = get().workspaces.find((w) => w.type === "personal") || get().workspaces[0];
+      if (next) await get().setCurrentWorkspace(next.id);
+    }
+  },
+
+  loadMembers: async (id) => {
+    const res = await fetch(`/api/workspaces/${id}/members`);
+    if (!res.ok) return null;
+    return res.json();
+  },
+
+  inviteMember: async (id, identifier) => {
+    const res = await fetch(`/api/workspaces/${id}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ identifier }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, message: data.error || "เชิญไม่สำเร็จ" };
+    // refresh member counts
+    get().loadWorkspaces();
+    if (data.added) return { ok: true, message: `เพิ่ม @${data.username} เข้าทีมแล้ว` };
+    return { ok: true, message: `ส่งคำเชิญไปที่ ${data.email} แล้ว (จะเข้าทีมอัตโนมัติเมื่อสมัคร)` };
+  },
+
+  removeMember: async (id, memberUserId) => {
+    await fetch(`/api/workspaces/${id}/members?userId=${memberUserId}`, {
+      method: "DELETE",
+    });
+    get().loadWorkspaces();
+  },
+
+  cancelInvite: async (id, email) => {
+    await fetch(`/api/workspaces/${id}/members?email=${encodeURIComponent(email)}`, {
+      method: "DELETE",
+    });
+  },
+
+  leaveWorkspace: async (id) => {
+    const me = get().user;
+    if (!me) return;
+    await fetch(`/api/workspaces/${id}/members?userId=${me.id}`, {
+      method: "DELETE",
+    });
+    set((s) => ({ workspaces: s.workspaces.filter((w) => w.id !== id) }));
+    if (get().currentWorkspaceId === id) {
+      const next = get().workspaces.find((w) => w.type === "personal") || get().workspaces[0];
+      if (next) await get().setCurrentWorkspace(next.id);
+    }
+  },
+
+  loadWorkspaceData: async () => {
+    const wsId = get().currentWorkspaceId;
+    if (!wsId) return;
+    const [cols, envs] = await Promise.all([
+      fetch(`/api/collections?workspaceId=${wsId}`).then((r) => r.json()),
+      fetch(`/api/environments?workspaceId=${wsId}`).then((r) => r.json()),
+    ]);
+    set({
+      collections: (Array.isArray(cols) ? cols : []).map(normalizeCollection),
+      environments: (Array.isArray(envs) ? envs : []).map(normalizeEnv),
+    });
+  },
+
+  // ---- tabs ----
   addTab: (req) => {
     const tab = req ? { ...newRequest(), ...req, id: req.id || uid() } : newRequest();
     set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }));
@@ -233,11 +452,7 @@ export const useStore = create<State>((set, get) => ({
       const keep = s.tabs.find((t) => t.id === id);
       const responses: Record<string, ProxyResponse | null> = {};
       if (keep && s.responses[id] !== undefined) responses[id] = s.responses[id];
-      return {
-        tabs: keep ? [keep] : s.tabs,
-        activeTabId: id,
-        responses,
-      };
+      return { tabs: keep ? [keep] : s.tabs, activeTabId: id, responses };
     }),
 
   closeAllTabs: () => {
@@ -249,7 +464,6 @@ export const useStore = create<State>((set, get) => ({
     const tab = get().tabs.find((t) => t.id === id);
     if (!tab) return;
     const copy = { ...JSON.parse(JSON.stringify(tab)), id: uid(), dirty: true };
-    // A duplicated tab is a fresh unsaved request (drop the saved binding).
     delete copy.collectionId;
     set((s) => ({ tabs: [...s.tabs, copy], activeTabId: copy.id }));
   },
@@ -287,7 +501,6 @@ export const useStore = create<State>((set, get) => ({
     let globalsList = get().globals.map((g) => ({ ...g }));
     const logs: string[] = [];
 
-    // 1) Pre-request script
     let workReq = tab;
     if (tab.preRequestScript && tab.preRequestScript.trim()) {
       const pre = runPreRequestScript(tab.preRequestScript, {
@@ -302,7 +515,6 @@ export const useStore = create<State>((set, get) => ({
       if (pre.error) logs.push(`[pre] ✖ ${pre.error}`);
     }
 
-    // 2) Build resolved payload with merged variables
     const map = buildVarMap(
       activeEnv ? { ...activeEnv, variables: envList } : null,
       globalsList
@@ -318,7 +530,6 @@ export const useStore = create<State>((set, get) => ({
       });
       const data: ProxyResponse = await res.json();
 
-      // 3) Test script
       let tests: TestResult[] = [];
       if (tab.testScript && tab.testScript.trim() && !data.error) {
         const t = runTestScript(tab.testScript, {
@@ -341,7 +552,6 @@ export const useStore = create<State>((set, get) => ({
         loading: { ...s.loading, [id]: false },
       }));
 
-      // 4) Persist variable mutations from scripts
       if (activeEnv) {
         const updated = { ...activeEnv, variables: envList };
         set((s) => ({
@@ -355,19 +565,12 @@ export const useStore = create<State>((set, get) => ({
           body: JSON.stringify({ variables: envList }),
         }).catch(() => {});
       }
-      // Persist globals if changed via script
       const before = JSON.stringify(get().globals.map((g) => [g.key, g.value]));
       const after = JSON.stringify(globalsList.map((g) => [g.key, g.value]));
-      if (before !== after) {
-        get().saveGlobals(globalsList);
-      }
+      if (before !== after) get().saveGlobals(globalsList);
 
-      // 5) Refresh cookies if the response set any
-      if (data.cookies && data.cookies.length) {
-        get().loadCookies();
-      }
+      if (data.cookies && data.cookies.length) get().loadCookies();
 
-      // 6) Record history
       fetch("/api/history", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -429,19 +632,22 @@ export const useStore = create<State>((set, get) => ({
   setSidebarView: (v) => set({ sidebarView: v }),
   toggleCookieJar: () => set((s) => ({ useCookieJar: !s.useCookieJar })),
 
-  createCollection: async (name) => {
+  // ---- collections ----
+  createCollection: async (name, visibility) => {
+    const workspaceId = get().currentWorkspaceId;
+    if (!workspaceId) return undefined;
     const res = await fetch("/api/collections", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: name || "New Collection" }),
+      body: JSON.stringify({
+        name: name || "New Collection",
+        workspaceId,
+        visibility: visibility || "shared",
+      }),
     });
     const c = await res.json();
-    set((s) => ({
-      collections: [
-        ...s.collections,
-        { id: c.id, name: c.name, order: c.order, requests: [] },
-      ],
-    }));
+    if (!c || !c.id) return undefined;
+    set((s) => ({ collections: [...s.collections, normalizeCollection(c)] }));
     return c.id;
   },
 
@@ -461,6 +667,50 @@ export const useStore = create<State>((set, get) => ({
     await fetch(`/api/collections/${id}`, { method: "DELETE" });
   },
 
+  duplicateCollection: async (id) => {
+    const col = get().collections.find((c) => c.id === id);
+    if (!col) return;
+    const newId = await get().createCollection(`${col.name} copy`, col.visibility);
+    if (!newId) return;
+    for (const req of col.requests) {
+      const res = await fetch("/api/requests", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...req, collectionId: newId }),
+      });
+      const saved = normalizeRequest(await res.json());
+      set((s) => ({
+        collections: s.collections.map((c) =>
+          c.id === newId ? { ...c, requests: [...c.requests, saved] } : c
+        ),
+      }));
+    }
+  },
+
+  setCollectionVisibility: async (id, v) => {
+    set((s) => ({
+      collections: s.collections.map((c) =>
+        c.id === id ? { ...c, visibility: v } : c
+      ),
+    }));
+    await fetch(`/api/collections/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ visibility: v }),
+    });
+  },
+
+  moveCollection: async (id, workspaceId) => {
+    await fetch(`/api/collections/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId }),
+    });
+    // It leaves the current workspace view.
+    set((s) => ({ collections: s.collections.filter((c) => c.id !== id) }));
+  },
+
+  // ---- requests ----
   saveActiveRequest: async (collectionId) => {
     const tab = get().activeTab();
     if (!tab) return;
@@ -574,46 +824,26 @@ export const useStore = create<State>((set, get) => ({
     const saved = normalizeRequest(await res.json());
     set((s) => ({
       collections: s.collections.map((c) =>
-        c.id === collection.id
-          ? { ...c, requests: [...c.requests, saved] }
-          : c
+        c.id === collection.id ? { ...c, requests: [...c.requests, saved] } : c
       ),
     }));
   },
 
-  duplicateCollection: async (id) => {
-    const col = get().collections.find((c) => c.id === id);
-    if (!col) return;
-    const newId = await get().createCollection(`${col.name} copy`);
-    if (!newId) return;
-    for (const req of col.requests) {
-      const res = await fetch("/api/requests", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...req, collectionId: newId }),
-      });
-      const saved = normalizeRequest(await res.json());
-      set((s) => ({
-        collections: s.collections.map((c) =>
-          c.id === newId ? { ...c, requests: [...c.requests, saved] } : c
-        ),
-      }));
-    }
-  },
-
-  createEnvironment: async (name) => {
+  // ---- environments ----
+  createEnvironment: async (name, visibility) => {
+    const workspaceId = get().currentWorkspaceId;
+    if (!workspaceId) return;
     const res = await fetch("/api/environments", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: name || "New Environment" }),
+      body: JSON.stringify({
+        name: name || "New Environment",
+        workspaceId,
+        visibility: visibility || "shared",
+      }),
     });
     const e = await res.json();
-    set((s) => ({
-      environments: [
-        ...s.environments,
-        { id: e.id, name: e.name, variables: [], isActive: false },
-      ],
-    }));
+    if (e && e.id) set((s) => ({ environments: [...s.environments, normalizeEnv(e)] }));
   },
 
   updateEnvironment: async (env) => {
@@ -629,51 +859,52 @@ export const useStore = create<State>((set, get) => ({
 
   deleteEnvironment: async (id) => {
     set((s) => ({ environments: s.environments.filter((e) => e.id !== id) }));
+    if (get().activeEnvId === id) get().activateEnvironment(null);
     await fetch(`/api/environments/${id}`, { method: "DELETE" });
   },
 
-  activateEnvironment: async (id) => {
-    set((s) => ({
-      environments: s.environments.map((e) => ({ ...e, isActive: e.id === id })),
-    }));
-    if (id) {
-      await fetch(`/api/environments/${id}`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ isActive: true }),
-      });
-    } else {
-      const envs = get().environments;
-      await Promise.all(
-        envs.map((e) =>
-          fetch(`/api/environments/${e.id}`, {
-            method: "PUT",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ isActive: false }),
-          })
-        )
-      );
-    }
+  activateEnvironment: (id) => {
+    set({ activeEnvId: id });
+    ls.set(ACTIVE_ENV_KEY, id || "");
   },
 
   duplicateEnvironment: async (env) => {
+    const workspaceId = get().currentWorkspaceId;
+    if (!workspaceId) return;
     const res = await fetch("/api/environments", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: `${env.name} copy`, variables: env.variables }),
+      body: JSON.stringify({
+        name: `${env.name} copy`,
+        workspaceId,
+        visibility: env.visibility || "shared",
+        variables: env.variables,
+      }),
     });
     const e = await res.json();
+    if (e && e.id) set((s) => ({ environments: [...s.environments, normalizeEnv(e)] }));
+  },
+
+  setEnvironmentVisibility: async (id, v) => {
     set((s) => ({
-      environments: [
-        ...s.environments,
-        {
-          id: e.id,
-          name: e.name,
-          variables: Array.isArray(e.variables) ? e.variables : env.variables,
-          isActive: false,
-        },
-      ],
+      environments: s.environments.map((e) =>
+        e.id === id ? { ...e, visibility: v } : e
+      ),
     }));
+    await fetch(`/api/environments/${id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ visibility: v }),
+    });
+  },
+
+  moveEnvironment: async (id, workspaceId) => {
+    await fetch(`/api/environments/${id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId }),
+    });
+    set((s) => ({ environments: s.environments.filter((e) => e.id !== id) }));
   },
 
   saveGlobals: async (vars) => {
@@ -718,9 +949,7 @@ export const useStore = create<State>((set, get) => ({
       body: JSON.stringify(c),
     });
     const saved = await res.json();
-    if (saved && saved.id) {
-      await get().loadCookies();
-    }
+    if (saved && saved.id) await get().loadCookies();
   },
 
   clearHistory: async () => {
@@ -738,13 +967,10 @@ export const useStore = create<State>((set, get) => ({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...req, collectionId }),
       });
-      const saved = await res.json();
-      const savedReq = normalizeRequest(saved);
+      const saved = normalizeRequest(await res.json());
       set((s) => ({
         collections: s.collections.map((c) =>
-          c.id === collectionId
-            ? { ...c, requests: [...c.requests, savedReq] }
-            : c
+          c.id === collectionId ? { ...c, requests: [...c.requests, saved] } : c
         ),
       }));
     }
@@ -771,3 +997,44 @@ export const useStore = create<State>((set, get) => ({
     URL.revokeObjectURL(url);
   },
 }));
+
+// Load everything after a successful auth.
+async function bootstrap(
+  set: (partial: Partial<State>) => void,
+  get: () => State
+) {
+  await get().loadWorkspaces();
+  await get().loadWorkspaceData();
+  const [globRes, cookieRes, histRes] = await Promise.all([
+    fetch("/api/globals").then((r) => r.json()),
+    fetch("/api/cookies").then((r) => r.json()),
+    fetch("/api/history?limit=100").then((r) => r.json()),
+  ]);
+  const history: HistoryEntry[] = (Array.isArray(histRes) ? histRes : []).map(
+    (h: any) => ({
+      id: h.id,
+      method: h.method,
+      url: h.url,
+      status: h.status,
+      statusText: h.statusText,
+      durationMs: h.durationMs,
+      sizeBytes: h.sizeBytes,
+      request: normalizeRequest(h.request || {}),
+      response: h.response || null,
+      createdAt: h.createdAt,
+    })
+  );
+  set({
+    globals: (Array.isArray(globRes) ? globRes : []).map((g: any) => ({
+      id: g.id,
+      key: g.key,
+      value: g.value,
+      enabled: g.enabled,
+    })),
+    cookies: Array.isArray(cookieRes) ? cookieRes : [],
+    history,
+    activeEnvId: ls.get(ACTIVE_ENV_KEY) || null,
+    ready: true,
+  });
+  if (get().tabs.length === 0) get().addTab();
+}

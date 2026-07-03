@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { ProxyResponse } from "@/lib/types";
 import { cookieHeaderForUrl, storeSetCookies } from "@/lib/cookieJar";
+import { getUserId } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -74,7 +75,8 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const useJar = payload.useCookieJar !== false;
+  const userId = getUserId(req);
+  const useJar = payload.useCookieJar !== false && !!userId;
   const userSetCookie = outHeaders.has("cookie");
 
   // Build body
@@ -135,9 +137,9 @@ export async function POST(req: NextRequest) {
     let hop = 0;
     while (true) {
       const hopHeaders = new Headers(outHeaders);
-      if (useJar && !userSetCookie) {
+      if (useJar && userId && !userSetCookie) {
         try {
-          const jarCookies = await cookieHeaderForUrl(currentUrl);
+          const jarCookies = await cookieHeaderForUrl(currentUrl, userId);
           if (jarCookies) hopHeaders.set("cookie", jarCookies);
           else hopHeaders.delete("cookie");
         } catch {
@@ -162,8 +164,8 @@ export async function POST(req: NextRequest) {
               : res.headers.get("set-cookie")
               ? [res.headers.get("set-cookie") as string]
               : [];
-          if (setCookies.length) {
-            const stored = await storeSetCookies(setCookies, currentUrl);
+          if (setCookies.length && userId) {
+            const stored = await storeSetCookies(setCookies, currentUrl, userId);
             allCookies.push(...stored);
           }
         } catch {

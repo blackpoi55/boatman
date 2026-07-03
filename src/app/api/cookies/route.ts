@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getUserId } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/cookies
-export async function GET() {
+// GET /api/cookies (current user's jar)
+export async function GET(req: NextRequest) {
+  const userId = getUserId(req);
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const cookies = await prisma.cookie.findMany({
+      where: { ownerId: userId },
       orderBy: [{ domain: "asc" }, { name: "asc" }],
     });
     return NextResponse.json(cookies);
@@ -20,38 +24,31 @@ export async function GET() {
 
 // POST /api/cookies -> add/update a cookie manually
 export async function POST(req: NextRequest) {
+  const userId = getUserId(req);
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const b = await req.json();
-    if (!b.domain || !b.name) {
+    if (!b.domain || !b.name)
       return NextResponse.json(
         { error: "domain and name are required" },
         { status: 400 }
       );
-    }
-    const cookie = await prisma.cookie.upsert({
-      where: {
-        domain_path_name: {
-          domain: b.domain,
-          path: b.path || "/",
-          name: b.name,
-        },
-      },
-      create: {
-        domain: b.domain,
-        path: b.path || "/",
-        name: b.name,
-        value: b.value || "",
-        secure: !!b.secure,
-        httpOnly: !!b.httpOnly,
-        expires: b.expires ? new Date(b.expires) : null,
-      },
-      update: {
-        value: b.value || "",
-        secure: !!b.secure,
-        httpOnly: !!b.httpOnly,
-        expires: b.expires ? new Date(b.expires) : null,
-      },
-    });
+    const key = {
+      ownerId: userId,
+      domain: b.domain,
+      path: b.path || "/",
+      name: b.name,
+    };
+    const existing = await prisma.cookie.findFirst({ where: key });
+    const data = {
+      value: b.value || "",
+      secure: !!b.secure,
+      httpOnly: !!b.httpOnly,
+      expires: b.expires ? new Date(b.expires) : null,
+    };
+    const cookie = existing
+      ? await prisma.cookie.update({ where: { id: existing.id }, data })
+      : await prisma.cookie.create({ data: { ...key, ...data } });
     return NextResponse.json(cookie, { status: 201 });
   } catch (err) {
     return NextResponse.json(
@@ -61,15 +58,16 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// DELETE /api/cookies       -> clear all
-// DELETE /api/cookies?id=x  -> delete one
+// DELETE /api/cookies?id=x  or all
 export async function DELETE(req: NextRequest) {
+  const userId = getUserId(req);
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const id = req.nextUrl.searchParams.get("id");
     if (id) {
-      await prisma.cookie.delete({ where: { id } });
+      await prisma.cookie.deleteMany({ where: { id, ownerId: userId } });
     } else {
-      await prisma.cookie.deleteMany({});
+      await prisma.cookie.deleteMany({ where: { ownerId: userId } });
     }
     return NextResponse.json({ ok: true });
   } catch (err) {

@@ -18,8 +18,12 @@ import {
   Pencil,
   FolderOpen,
   CircleDot,
+  Lock,
+  Users,
+  CornerUpRight,
 } from "lucide-react";
-import { useContextMenu } from "./ContextMenu";
+import { useContextMenu, MenuItem } from "./ContextMenu";
+import { Visibility } from "@/lib/types";
 
 export default function Sidebar() {
   const view = useStore((s) => s.sidebarView);
@@ -124,6 +128,10 @@ function CollectionNode({ collection }: { collection: CollectionData }) {
   const deleteCollection = useStore((s) => s.deleteCollection);
   const duplicateCollection = useStore((s) => s.duplicateCollection);
   const exportCollection = useStore((s) => s.exportCollection);
+  const setCollectionVisibility = useStore((s) => s.setCollectionVisibility);
+  const moveCollection = useStore((s) => s.moveCollection);
+  const workspaces = useStore((s) => s.workspaces);
+  const currentWorkspaceId = useStore((s) => s.currentWorkspaceId);
   const addTab = useStore((s) => s.addTab);
   const activeTabId = useStore((s) => s.activeTabId);
   const openSavedRequest = useStore((s) => s.openSavedRequest);
@@ -131,6 +139,15 @@ function CollectionNode({ collection }: { collection: CollectionData }) {
   const renameSavedRequest = useStore((s) => s.renameSavedRequest);
   const duplicateSavedRequest = useStore((s) => s.duplicateSavedRequest);
   const { open: openMenu } = useContextMenu();
+
+  const moveItems = (onMove: (wsId: string) => void): MenuItem[] =>
+    workspaces
+      .filter((w) => w.id !== currentWorkspaceId)
+      .map((w) => ({
+        label: `Move to: ${w.name}`,
+        icon: <CornerUpRight size={13} />,
+        onClick: () => onMove(w.id),
+      }));
 
   const addRequestToCollection = () =>
     addTab({
@@ -161,6 +178,19 @@ function CollectionNode({ collection }: { collection: CollectionData }) {
         icon: <Download size={13} />,
         onClick: () => exportCollection(collection.id),
       },
+      { separator: true },
+      collection.visibility === "private"
+        ? {
+            label: "Make Shared (ทีมเห็น)",
+            icon: <Users size={13} />,
+            onClick: () => setCollectionVisibility(collection.id, "shared"),
+          }
+        : {
+            label: "Make Private (เห็นคนเดียว)",
+            icon: <Lock size={13} />,
+            onClick: () => setCollectionVisibility(collection.id, "private"),
+          },
+      ...moveItems((wsId) => moveCollection(collection.id, wsId)),
       { separator: true },
       {
         label: "Delete",
@@ -239,6 +269,9 @@ function CollectionNode({ collection }: { collection: CollectionData }) {
           >
             {collection.name}
           </span>
+        )}
+        {collection.visibility === "private" && (
+          <Lock size={11} className="shrink-0 text-pm-muted" />
         )}
         <span className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100">
           <button
@@ -325,12 +358,26 @@ function EnvironmentsView() {
   const createEnvironment = useStore((s) => s.createEnvironment);
   const deleteEnvironment = useStore((s) => s.deleteEnvironment);
   const activateEnvironment = useStore((s) => s.activateEnvironment);
+  const activeEnvId = useStore((s) => s.activeEnvId);
   const updateEnvironment = useStore((s) => s.updateEnvironment);
   const duplicateEnvironment = useStore((s) => s.duplicateEnvironment);
+  const setEnvironmentVisibility = useStore((s) => s.setEnvironmentVisibility);
+  const moveEnvironment = useStore((s) => s.moveEnvironment);
+  const workspaces = useStore((s) => s.workspaces);
+  const currentWorkspaceId = useStore((s) => s.currentWorkspaceId);
   const globals = useStore((s) => s.globals);
   const saveGlobals = useStore((s) => s.saveGlobals);
   const { open: openMenu } = useContextMenu();
   const [selected, setSelected] = useState<string | null>(null);
+
+  const envMoveItems = (envId: string): MenuItem[] =>
+    workspaces
+      .filter((w) => w.id !== currentWorkspaceId)
+      .map((w) => ({
+        label: `Move to: ${w.name}`,
+        icon: <CornerUpRight size={13} />,
+        onClick: () => moveEnvironment(envId, w.id),
+      }));
 
   const env = environments.find((e) => e.id === selected) || null;
   const showGlobals = selected === "__globals__";
@@ -369,9 +416,10 @@ function EnvironmentsView() {
               onContextMenu={(ev) =>
                 openMenu(ev, [
                   {
-                    label: e.isActive ? "Deactivate" : "Set Active",
+                    label: activeEnvId === e.id ? "Deactivate" : "Set Active",
                     icon: <CircleDot size={13} />,
-                    onClick: () => activateEnvironment(e.isActive ? null : e.id),
+                    onClick: () =>
+                      activateEnvironment(activeEnvId === e.id ? null : e.id),
                   },
                   {
                     label: "Edit Variables",
@@ -392,6 +440,19 @@ function EnvironmentsView() {
                     onClick: () => duplicateEnvironment(e),
                   },
                   { separator: true },
+                  e.visibility === "private"
+                    ? {
+                        label: "Make Shared (ทีมเห็น)",
+                        icon: <Users size={13} />,
+                        onClick: () => setEnvironmentVisibility(e.id, "shared"),
+                      }
+                    : {
+                        label: "Make Private (เห็นคนเดียว)",
+                        icon: <Lock size={13} />,
+                        onClick: () => setEnvironmentVisibility(e.id, "private"),
+                      },
+                  ...envMoveItems(e.id),
+                  { separator: true },
                   {
                     label: "Delete",
                     icon: <Trash2 size={13} />,
@@ -410,10 +471,12 @@ function EnvironmentsView() {
               }`}
             >
               <button
-                onClick={() => activateEnvironment(e.isActive ? null : e.id)}
-                title={e.isActive ? "Active" : "Set active"}
+                onClick={() =>
+                  activateEnvironment(activeEnvId === e.id ? null : e.id)
+                }
+                title={activeEnvId === e.id ? "Active" : "Set active"}
                 className={`h-3 w-3 rounded-full border ${
-                  e.isActive
+                  activeEnvId === e.id
                     ? "border-pm-green bg-pm-green"
                     : "border-pm-border2"
                 }`}
@@ -424,6 +487,9 @@ function EnvironmentsView() {
               >
                 {e.name}
               </span>
+              {e.visibility === "private" && (
+                <Lock size={11} className="shrink-0 text-pm-muted" />
+              )}
               <button
                 onClick={() => {
                   if (confirm(`Delete environment "${e.name}"?`)) {

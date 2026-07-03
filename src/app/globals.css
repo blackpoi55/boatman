@@ -9,8 +9,9 @@
   --color-pm-border2: #474747;
   --color-pm-text: #e4e4e4;
   --color-pm-muted: #9a9a9a;
-  --color-pm-orange: #ff6c37;
-  --color-pm-orange-dim: #e05320;
+  /* Accent color (token name kept as "orange" but themed pink) */
+  --color-pm-orange: #ec4899;
+  --color-pm-orange-dim: #db2777;
   --color-pm-green: #6bce5a;
   --color-pm-red: #f56565;
   --color-pm-blue: #4aa8ff;

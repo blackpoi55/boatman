@@ -74,8 +74,11 @@ function cookieMatches(
   return domainOk && pathOk;
 }
 
-/** Build the Cookie header value for a request URL from the stored jar. */
-export async function cookieHeaderForUrl(url: string): Promise<string> {
+/** Build the Cookie header value for a request URL from the user's jar. */
+export async function cookieHeaderForUrl(
+  url: string,
+  ownerId: string
+): Promise<string> {
   let host = "";
   let path = "/";
   try {
@@ -86,7 +89,7 @@ export async function cookieHeaderForUrl(url: string): Promise<string> {
     return "";
   }
   const now = new Date();
-  const all = await prisma.cookie.findMany({});
+  const all = await prisma.cookie.findMany({ where: { ownerId } });
   const applicable = all.filter(
     (c) =>
       cookieMatches(c.domain, c.path, host, path) &&
@@ -95,10 +98,11 @@ export async function cookieHeaderForUrl(url: string): Promise<string> {
   return applicable.map((c) => `${c.name}=${c.value}`).join("; ");
 }
 
-/** Persist an array of Set-Cookie header strings into the jar. */
+/** Persist an array of Set-Cookie header strings into the user's jar. */
 export async function storeSetCookies(
   setCookies: string[],
-  requestUrl: string
+  requestUrl: string,
+  ownerId: string
 ): Promise<{ name: string; value: string; domain: string; path: string }[]> {
   let host = "";
   try {
@@ -116,45 +120,47 @@ export async function storeSetCookies(
   for (const raw of setCookies) {
     const parsed = parseSetCookie(raw, host);
     if (!parsed) continue;
+    const key = {
+      ownerId,
+      domain: parsed.domain,
+      path: parsed.path,
+      name: parsed.name,
+    };
     // Expired (deletion) cookie -> remove it.
     if (parsed.expires && parsed.expires.getTime() <= Date.now()) {
+      await prisma.cookie.deleteMany({ where: key }).catch(() => {});
+      continue;
+    }
+    // Manual upsert (composite uniqueness enforced here, not in DB).
+    const existing = await prisma.cookie.findFirst({ where: key });
+    if (existing) {
       await prisma.cookie
-        .deleteMany({
-          where: {
-            domain: parsed.domain,
-            path: parsed.path,
-            name: parsed.name,
+        .update({
+          where: { id: existing.id },
+          data: {
+            value: parsed.value,
+            secure: parsed.secure,
+            httpOnly: parsed.httpOnly,
+            expires: parsed.expires,
           },
         })
         .catch(() => {});
-      continue;
-    }
-    await prisma.cookie
-      .upsert({
-        where: {
-          domain_path_name: {
+    } else {
+      await prisma.cookie
+        .create({
+          data: {
+            ownerId,
             domain: parsed.domain,
             path: parsed.path,
             name: parsed.name,
+            value: parsed.value,
+            secure: parsed.secure,
+            httpOnly: parsed.httpOnly,
+            expires: parsed.expires,
           },
-        },
-        create: {
-          domain: parsed.domain,
-          path: parsed.path,
-          name: parsed.name,
-          value: parsed.value,
-          secure: parsed.secure,
-          httpOnly: parsed.httpOnly,
-          expires: parsed.expires,
-        },
-        update: {
-          value: parsed.value,
-          secure: parsed.secure,
-          httpOnly: parsed.httpOnly,
-          expires: parsed.expires,
-        },
-      })
-      .catch(() => {});
+        })
+        .catch(() => {});
+    }
     stored.push({
       name: parsed.name,
       value: parsed.value,

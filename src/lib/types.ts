@@ -71,11 +71,48 @@ export interface RequestData {
   dirty?: boolean;
 }
 
+export type Visibility = "private" | "shared";
+
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  name: string;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  type: "personal" | "team";
+  ownerId?: string | null;
+  isMine?: boolean;
+  memberCount?: number;
+}
+
+export interface WorkspaceMemberInfo {
+  userId: string;
+  username: string;
+  name: string;
+  email: string;
+  role: "owner" | "member";
+}
+
+export interface MembersData {
+  isOwner: boolean;
+  ownerId: string | null;
+  members: WorkspaceMemberInfo[];
+  invitations: { email: string }[];
+}
+
 export interface CollectionData {
   id: string;
   name: string;
   order: number;
   requests: RequestData[];
+  workspaceId?: string | null;
+  ownerId?: string | null;
+  visibility?: Visibility;
+  isMine?: boolean;
 }
 
 export interface EnvVariable {
@@ -90,6 +127,10 @@ export interface EnvironmentData {
   name: string;
   variables: EnvVariable[];
   isActive: boolean;
+  workspaceId?: string | null;
+  ownerId?: string | null;
+  visibility?: Visibility;
+  isMine?: boolean;
 }
 
 export interface ResponseHeader {

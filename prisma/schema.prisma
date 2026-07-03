@@ -26,10 +26,23 @@ model Workspace {
   owner        User?             @relation("OwnedWorkspaces", fields: [ownerId], references: [id], onDelete: Cascade)
   createdAt    DateTime          @default(now())
   members      WorkspaceMember[]
+  invitations  Invitation[]
   collections  Collection[]
   environments Environment[]
 
   @@index([ownerId])
+}
+
+model Invitation {
+  id          String    @id @default(cuid())
+  workspaceId String
+  email       String
+  invitedBy   String?
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, email])
+  @@index([email])
 }
 
 model WorkspaceMember {
@@ -110,8 +123,9 @@ model Cookie {
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  @@unique([ownerId, domain, path, name])
-  @@index([ownerId])
+  // Uniqueness of (ownerId, domain, path, name) is enforced in application code
+  // (cookieJar.ts) to avoid a destructive constraint migration on the shared DB.
+  @@index([ownerId, domain])
 }
 
 model GlobalVar {
@@ -123,7 +137,7 @@ model GlobalVar {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([ownerId, key])
+  // Uniqueness of (ownerId, key) enforced in application code (globals route).
   @@index([ownerId])
 }
 
