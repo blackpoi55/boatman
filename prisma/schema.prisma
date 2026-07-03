@@ -1,0 +1,144 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String            @id @default(cuid())
+  username     String            @unique
+  email        String            @unique
+  passwordHash String
+  name         String            @default("")
+  createdAt    DateTime          @default(now())
+  ownedWorkspaces Workspace[]    @relation("OwnedWorkspaces")
+  memberships  WorkspaceMember[]
+}
+
+model Workspace {
+  id           String            @id @default(cuid())
+  name         String
+  type         String            @default("team") // "personal" | "team"
+  ownerId      String?
+  owner        User?             @relation("OwnedWorkspaces", fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt    DateTime          @default(now())
+  members      WorkspaceMember[]
+  collections  Collection[]
+  environments Environment[]
+
+  @@index([ownerId])
+}
+
+model WorkspaceMember {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        String    @default("member") // "owner" | "member"
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Collection {
+  id          String     @id @default(cuid())
+  name        String
+  order       Int        @default(0)
+  ownerId     String?
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  visibility  String     @default("shared") // "private" | "shared"
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  requests    Request[]
+
+  @@index([workspaceId])
+  @@index([ownerId])
+}
+
+model Request {
+  id                String     @id @default(cuid())
+  collectionId      String
+  collection        Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  name              String
+  method            String     @default("GET")
+  url               String     @default("")
+  description       String     @default("")
+  params            Json       @default("[]")
+  headers           Json       @default("[]")
+  auth              Json       @default("{}")
+  body              Json       @default("{}")
+  preRequestScript  String     @default("")
+  testScript        String     @default("")
+  order             Int        @default(0)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([collectionId])
+}
+
+model Environment {
+  id          String     @id @default(cuid())
+  name        String
+  variables   Json       @default("[]")
+  isActive    Boolean    @default(false)
+  ownerId     String?
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  visibility  String     @default("shared") // "private" | "shared"
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([workspaceId])
+  @@index([ownerId])
+}
+
+model Cookie {
+  id        String    @id @default(cuid())
+  ownerId   String?
+  domain    String
+  path      String    @default("/")
+  name      String
+  value     String
+  secure    Boolean   @default(false)
+  httpOnly  Boolean   @default(false)
+  expires   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([ownerId, domain, path, name])
+  @@index([ownerId])
+}
+
+model GlobalVar {
+  id        String   @id @default(cuid())
+  ownerId   String?
+  key       String
+  value     String   @default("")
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([ownerId, key])
+  @@index([ownerId])
+}
+
+model History {
+  id           String   @id @default(cuid())
+  ownerId      String?
+  method       String
+  url          String
+  status       Int?
+  statusText   String?
+  durationMs   Int?
+  sizeBytes    Int?
+  request      Json     @default("{}")
+  response     Json     @default("{}")
+  createdAt    DateTime @default(now())
+
+  @@index([ownerId, createdAt])
+}
