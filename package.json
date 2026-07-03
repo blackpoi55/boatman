@@ -16,10 +16,13 @@
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.469.0",
-    "next": "15.1.4",
+    "next": "15.5.20",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "zustand": "^5.0.2"
+  },
+  "overrides": {
+    "postcss": "^8.5.10"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.0",
